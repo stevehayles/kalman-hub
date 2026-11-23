@@ -42,11 +42,13 @@ All other requests need `Authorization: Bearer <token>`.
 
 ### 1. Tokens and Tailscale key
 
+Generate two different tokens (run twice):
+
 ```sh
-cp .env.example .env
-openssl rand -hex 32   # paste as HUB_CLAUDE_TOKEN
-openssl rand -hex 32   # paste as HUB_PEPPER_TOKEN
+openssl rand -hex 32
 ```
+
+or in PowerShell 7: `[System.Security.Cryptography.RandomNumberGenerator]::GetHexString(64).ToLower()`
 
 In the Tailscale admin console:
 
@@ -56,16 +58,21 @@ In the Tailscale admin console:
    "tagOwners": { "tag:kalman-hub": ["autogroup:admin"] },
    "nodeAttrs": [ { "target": ["tag:kalman-hub"], "attr": ["funnel"] } ]
    ```
-3. **Keys**: create an auth key with that tag and put it in `.env` as `TS_AUTHKEY`.
+3. **Keys**: create an auth key with that tag. This is `TS_AUTHKEY`.
 
-### 2. Start it (Portainer stack or CLI)
+### 2. Start it
 
-```sh
-docker compose up -d --build
-docker compose logs -f
-```
+**Portainer (Git stack):**
 
-In Portainer, create a stack from this folder (or a Git repo holding it) and add the `.env` values as stack environment variables.
+1. Stacks → **Add stack** → name `kalman-hub` → **Repository**.
+2. Repository URL `https://github.com/stevehayles/kalman-hub`, reference `refs/heads/main`, compose path `docker-compose.yml`.
+3. Turn on **Authentication** and enter your GitHub username and a fine-grained token with read-only Contents access to this repo.
+4. Under **Environment variables**, add `HUB_CLAUDE_TOKEN`, `HUB_PEPPER_TOKEN` and `TS_AUTHKEY` (and optionally `HUB_TIMEZONE`, `HUB_SOON_DAYS`, `HUB_STALE_HOURS`).
+5. **Deploy the stack.** Portainer clones the repo, builds the hub image and starts both containers. The first build takes a few minutes.
+
+To update later, push to `main` and use **Pull and redeploy** on the stack (tick re-pull/rebuild).
+
+**Docker CLI:** copy `.env.example` to `.env`, fill it in, then `docker compose up -d --build`.
 
 The public address is `https://kalman-hub.<your-tailnet>.ts.net`. Public DNS can take about 10 minutes the first time.
 
@@ -132,7 +139,7 @@ Set this up as a scheduled task in Claude, running before Pepper's briefing (for
 ## Security notes
 
 - Only the public listener (port 8081) is published, and it accepts only the Claude token. The REST API and the Pepper token never leave your server or tailnet.
-- Funnel makes the address public, so keep the tokens long and secret. Rotate a token by changing `.env` and restarting; update the connector header to match.
+- Funnel makes the address public, so keep the tokens long and secret. Rotate a token by changing the stack's environment variable and redeploying; update the connector header to match.
 - The hub stores your tracker, nothing else. Back up the `hub-data` volume if you want history; the tracker itself can always rebuild it.
 
 ## Development
