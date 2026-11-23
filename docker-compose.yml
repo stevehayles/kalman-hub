@@ -7,6 +7,8 @@ services:
   hub:
     build: .
     image: kalman-hub:latest
+    # Built locally from this repo, so never try to pull it from a registry.
+    pull_policy: build
     environment:
       - HUB_CLAUDE_TOKEN=${HUB_CLAUDE_TOKEN:?set HUB_CLAUDE_TOKEN}
       - HUB_PEPPER_TOKEN=${HUB_PEPPER_TOKEN:?set HUB_PEPPER_TOKEN}
