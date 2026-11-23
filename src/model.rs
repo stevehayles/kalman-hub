@@ -28,14 +28,53 @@ pub struct JobView {
     pub days_to_end: i64,
 }
 
+/// A change Pepper (or Claude) has asked for. `kind` is "change" for an existing job or
+/// "new" for a job to add. Only the fields that should change are set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingUpdate {
+pub struct ChangeRequest {
     pub id: i64,
-    pub job_id: i64,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start: Option<NaiveDate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end: Option<NaiveDate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depends_on: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workstream: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_section: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     pub requested_by: String,
     pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct NewChange {
+    pub kind: &'static str,
+    pub job_id: Option<i64>,
+    pub status: Option<String>,
+    pub start: Option<NaiveDate>,
+    pub end: Option<NaiveDate>,
+    pub owner: Option<String>,
+    pub depends_on: Option<String>,
+    pub task: Option<String>,
+    pub workstream: Option<String>,
+    pub plan_section: Option<String>,
+    pub note: Option<String>,
 }
 
 pub fn is_valid_status(s: &str) -> bool {
@@ -88,7 +127,8 @@ pub struct Briefing {
     pub finishing_this_week: Vec<JobView>,
     pub underway_count: usize,
     pub next_gate: Option<JobView>,
-    pub pending_updates: usize,
+    pub pending_changes: Vec<ChangeRequest>,
+    pub recent_activity: Vec<ChangeRequest>,
     pub summary: String,
 }
 
@@ -101,7 +141,8 @@ pub fn build_briefing(
     snapshot_taken_at: Option<String>,
     snapshot_is_stale: bool,
     notes_from_claude: Option<String>,
-    pending_updates: usize,
+    pending_changes: Vec<ChangeRequest>,
+    recent_activity: Vec<ChangeRequest>,
 ) -> Briefing {
     let mut overdue = Vec::new();
     let mut blocked = Vec::new();
@@ -163,6 +204,9 @@ pub fn build_briefing(
     if let Some(g) = &next_gate {
         summary.push_str(&format!(" Next gate: {} on {} ({} days).", g.job.task, g.job.end, g.days_to_end));
     }
+    if !pending_changes.is_empty() {
+        summary.push_str(&format!(" {} change(s) waiting for the next sync.", pending_changes.len()));
+    }
     if snapshot_is_stale {
         summary.push_str(" Warning: the tracker snapshot is out of date, so check the Claude tracker.");
     }
@@ -181,7 +225,8 @@ pub fn build_briefing(
         finishing_this_week,
         underway_count,
         next_gate,
-        pending_updates,
+        pending_changes,
+        recent_activity,
         summary,
     }
 }

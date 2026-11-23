@@ -50,3 +50,11 @@ pub async fn pending(State(state): State<AppState>) -> Response {
 pub async fn queue(State(state): State<AppState>, Extension(role): Extension<Role>, Json(body): Json<Value>) -> Response {
     reply(service::queue_update(&state, role, body))
 }
+
+pub async fn change(State(state): State<AppState>, Extension(role): Extension<Role>, Json(body): Json<Value>) -> Response {
+    reply(service::queue_job_change(&state, role, body))
+}
+
+pub async fn new_job(State(state): State<AppState>, Extension(role): Extension<Role>, Json(body): Json<Value>) -> Response {
+    reply(service::queue_new_job(&state, role, body))
+}

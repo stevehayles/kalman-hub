@@ -1,9 +1,9 @@
 //! The operations behind both the MCP tools and the REST API.
 
 use crate::auth::Role;
-use crate::model::{build_briefing, is_valid_status, view, Job, STATUSES};
+use crate::model::{build_briefing, is_valid_status, view, Job, NewChange, STATUSES};
 use crate::AppState;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -85,8 +85,12 @@ pub fn get_briefing(state: &AppState, args: Value) -> OpResult {
         None => true,
     };
     let notes = state.db.meta("notes")?;
-    let pending = state.db.pending_updates()?.len();
-    let b = build_briefing(state.db.jobs()?, today, &state.cfg.tz_name, window, taken_at, stale, notes, pending);
+    let pending = state.db.pending_updates()?;
+    let since = (Utc::now() - Duration::days(7)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let mut recent = state.db.updates_since(&since)?;
+    recent.reverse();
+    recent.truncate(15);
+    let b = build_briefing(state.db.jobs()?, today, &state.cfg.tz_name, window, taken_at, stale, notes, pending, recent);
     serde_json::to_value(b).map_err(|e| e.to_string())
 }
 
@@ -105,12 +109,17 @@ pub struct ListArgs {
 pub fn list_jobs(state: &AppState, args: Value) -> OpResult {
     let a: ListArgs = parse(args)?;
     let today = state.cfg.today();
+    let all = state.db.jobs()?;
+    let mut workstreams: Vec<String> = all.iter().map(|j| j.workstream.clone()).collect();
+    workstreams.sort();
+    workstreams.dedup();
+    let mut owners: Vec<String> = all.iter().filter_map(|j| j.owner.clone()).collect();
+    owners.sort();
+    owners.dedup();
     let eq = |want: &Option<String>, have: &str| {
         want.as_deref().map(|w| w.eq_ignore_ascii_case(have)).unwrap_or(true)
     };
-    let jobs: Vec<_> = state
-        .db
-        .jobs()?
+    let jobs: Vec<_> = all
         .into_iter()
         .map(|j| view(j, today, state.cfg.soon_days))
         .filter(|v| {
@@ -120,7 +129,25 @@ pub fn list_jobs(state: &AppState, args: Value) -> OpResult {
                 && eq(&a.flag, v.flag)
         })
         .collect();
-    Ok(json!({ "today": today, "count": jobs.len(), "jobs": jobs }))
+    Ok(json!({ "today": today, "count": jobs.len(), "jobs": jobs, "workstreams": workstreams, "owners": owners }))
+}
+
+fn clean(s: Option<String>) -> Option<String> {
+    s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+fn check_text(name: &str, v: &Option<String>, max: usize) -> Result<(), String> {
+    if v.as_deref().map(str::len).unwrap_or(0) > max {
+        return Err(format!("{name} is longer than {max} characters"));
+    }
+    Ok(())
+}
+
+fn check_status(s: &Option<String>) -> Result<(), String> {
+    match s {
+        Some(s) if !is_valid_status(s) => Err(format!("unknown status {s:?}; use one of {STATUSES:?}")),
+        _ => Ok(()),
+    }
 }
 
 #[derive(Deserialize)]
@@ -134,22 +161,154 @@ pub struct QueueArgs {
 
 pub fn queue_update(state: &AppState, role: Role, args: Value) -> OpResult {
     let a: QueueArgs = parse(args)?;
-    if a.status.is_none() && a.note.as_deref().map(str::trim).unwrap_or("").is_empty() {
-        return Err("give a status, a note, or both".into());
+    queue_job_change(state, role, json!({ "job_id": a.job_id, "status": a.status, "note": a.note }))
+}
+
+#[derive(Deserialize)]
+struct ChangeArgs {
+    job_id: i64,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    start: Option<NaiveDate>,
+    #[serde(default)]
+    end: Option<NaiveDate>,
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    depends_on: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+pub fn queue_job_change(state: &AppState, role: Role, args: Value) -> OpResult {
+    let a: ChangeArgs = parse(args)?;
+    let (status, owner, depends_on, note) = (clean(a.status), clean(a.owner), clean(a.depends_on), clean(a.note));
+    if status.is_none() && a.start.is_none() && a.end.is_none() && owner.is_none() && depends_on.is_none() && note.is_none() {
+        return Err("give at least one of status, start, end, owner, depends_on or note".into());
     }
-    if let Some(s) = &a.status {
-        if !is_valid_status(s) {
-            return Err(format!("unknown status {s:?}; use one of {STATUSES:?}"));
+    check_status(&status)?;
+    check_text("note", &note, MAX_TEXT)?;
+    check_text("owner", &owner, 100)?;
+    check_text("depends_on", &depends_on, 200)?;
+    let job = state
+        .db
+        .jobs()?
+        .into_iter()
+        .find(|j| j.id == a.job_id)
+        .ok_or_else(|| format!("no job with id {} in the latest snapshot; use list_jobs to find the right id", a.job_id))?;
+    let start = a.start.unwrap_or(job.start);
+    let end = a.end.unwrap_or(job.end);
+    if end < start {
+        return Err(format!("that would make job {} end ({end}) before it starts ({start})", job.id));
+    }
+    let change = NewChange {
+        kind: "change",
+        job_id: Some(job.id),
+        status,
+        start: a.start,
+        end: a.end,
+        owner,
+        depends_on,
+        note,
+        ..Default::default()
+    };
+    let id = state.db.queue_change(&change, role.name(), &now_utc())?;
+    Ok(json!({
+        "queued_change_id": id,
+        "job": { "id": job.id, "task": job.task },
+        "applies_on": "the next Claude sync (daily at 06:02 London time)"
+    }))
+}
+
+#[derive(Deserialize)]
+struct NewJobArgs {
+    task: String,
+    workstream: String,
+    start: NaiveDate,
+    end: NaiveDate,
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    depends_on: Option<String>,
+    #[serde(default)]
+    plan_section: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+    /// Add it even if a job with very similar wording exists.
+    #[serde(default)]
+    allow_similar: bool,
+}
+
+fn words(s: &str) -> HashSet<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2)
+        .map(str::to_string)
+        .collect()
+}
+
+pub fn queue_new_job(state: &AppState, role: Role, args: Value) -> OpResult {
+    let a: NewJobArgs = parse(args)?;
+    let task = a.task.trim().to_string();
+    let workstream = a.workstream.trim().to_string();
+    if task.is_empty() || workstream.is_empty() {
+        return Err("task and workstream are both needed".into());
+    }
+    check_text("task", &Some(task.clone()), 300)?;
+    if a.end < a.start {
+        return Err("the job would end before it starts".into());
+    }
+    let (owner, depends_on, plan_section, note) =
+        (clean(a.owner), clean(a.depends_on), clean(a.plan_section), clean(a.note));
+    check_text("note", &note, MAX_TEXT)?;
+
+    let jobs = state.db.jobs()?;
+    let known: HashSet<String> = jobs.iter().map(|j| j.workstream.to_lowercase()).collect();
+    if !known.is_empty() && !known.contains(&workstream.to_lowercase()) {
+        let mut list: Vec<_> = jobs.iter().map(|j| j.workstream.clone()).collect();
+        list.sort();
+        list.dedup();
+        return Err(format!("unknown workstream {workstream:?}; use one of {list:?}"));
+    }
+    if !a.allow_similar {
+        let mine = words(&task);
+        let pending_new = state.db.pending_updates()?.into_iter().filter(|c| c.kind == "new");
+        let existing = jobs
+            .iter()
+            .map(|j| (Some(j.id), j.task.clone()))
+            .chain(pending_new.filter_map(|c| c.task.map(|t| (None, t))));
+        for (id, other) in existing {
+            let theirs = words(&other);
+            let shared = mine.intersection(&theirs).count();
+            let smaller = mine.len().min(theirs.len()).max(1);
+            if shared * 100 / smaller >= 70 {
+                let which = id.map(|i| format!("job {i}")).unwrap_or_else(|| "a new job already queued".into());
+                return Err(format!(
+                    "this looks like {which}: {other:?}. Update that one instead, or set allow_similar if it really is a separate job"
+                ));
+            }
         }
     }
-    if a.note.as_deref().map(str::len).unwrap_or(0) > MAX_TEXT {
-        return Err(format!("note is longer than {MAX_TEXT} characters"));
-    }
-    if !state.db.job_exists(a.job_id)? {
-        return Err(format!("no job with id {} in the latest snapshot", a.job_id));
-    }
-    let id = state.db.queue_update(a.job_id, a.status.as_deref(), a.note.as_deref(), role.name(), &now_utc())?;
-    Ok(json!({ "queued_update_id": id, "applies_on": "the next Claude sync" }))
+    let change = NewChange {
+        kind: "new",
+        task: Some(task.clone()),
+        workstream: Some(workstream),
+        start: Some(a.start),
+        end: Some(a.end),
+        owner,
+        depends_on,
+        plan_section,
+        note,
+        status: Some("Not started".into()),
+        ..Default::default()
+    };
+    let id = state.db.queue_change(&change, role.name(), &now_utc())?;
+    Ok(json!({
+        "queued_change_id": id,
+        "task": task,
+        "applies_on": "the next Claude sync (daily at 06:02 London time), which gives it a tracker ID"
+    }))
 }
 
 pub fn list_pending(state: &AppState) -> OpResult {

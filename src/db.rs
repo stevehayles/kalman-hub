@@ -1,4 +1,4 @@
-use crate::model::{Job, PendingUpdate};
+use crate::model::{ChangeRequest, Job, NewChange};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -38,8 +38,16 @@ impl Db {
              );
              CREATE TABLE IF NOT EXISTS updates (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 job_id INTEGER NOT NULL,
+                 kind TEXT NOT NULL DEFAULT 'change',
+                 job_id INTEGER,
                  status TEXT,
+                 start TEXT,
+                 end TEXT,
+                 owner TEXT,
+                 depends_on TEXT,
+                 task TEXT,
+                 workstream TEXT,
+                 plan_section TEXT,
                  note TEXT,
                  requested_by TEXT NOT NULL,
                  created_at TEXT NOT NULL,
@@ -48,6 +56,7 @@ impl Db {
              );",
         )
         .map_err(err)?;
+        migrate_updates(&conn)?;
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -141,44 +150,74 @@ impl Db {
             .map_err(err)
     }
 
-    pub fn queue_update(
-        &self,
-        job_id: i64,
-        status: Option<&str>,
-        note: Option<&str>,
-        requested_by: &str,
-        created_at: &str,
-    ) -> DbResult<i64> {
+    pub fn queue_change(&self, c: &NewChange, requested_by: &str, created_at: &str) -> DbResult<i64> {
         let conn = self.lock();
         conn.execute(
-            "INSERT INTO updates (job_id, status, note, requested_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![job_id, status, note, requested_by, created_at],
+            "INSERT INTO updates (kind, job_id, status, start, end, owner, depends_on, task, workstream,
+                                  plan_section, note, requested_by, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                c.kind,
+                c.job_id,
+                c.status,
+                c.start.map(|d| d.to_string()),
+                c.end.map(|d| d.to_string()),
+                c.owner,
+                c.depends_on,
+                c.task,
+                c.workstream,
+                c.plan_section,
+                c.note,
+                requested_by,
+                created_at
+            ],
         )
         .map_err(err)?;
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn pending_updates(&self) -> DbResult<Vec<PendingUpdate>> {
+    fn read_updates(&self, where_sql: &str, args: &[&dyn rusqlite::ToSql]) -> DbResult<Vec<ChangeRequest>> {
         let conn = self.lock();
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, job_id, status, note, requested_by, created_at
-                 FROM updates WHERE applied_at IS NULL ORDER BY id",
-            )
-            .map_err(err)?;
+        let sql = format!(
+            "SELECT id, kind, job_id, status, start, end, owner, depends_on, task, workstream, plan_section,
+                    note, requested_by, created_at, applied_at, result
+             FROM updates WHERE {where_sql} ORDER BY id"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(err)?;
         let rows = stmt
-            .query_map([], |r| {
-                Ok(PendingUpdate {
+            .query_map(args, |r| {
+                let date = |i: usize| -> rusqlite::Result<Option<chrono::NaiveDate>> {
+                    Ok(r.get::<_, Option<String>>(i)?.and_then(|s| s.parse().ok()))
+                };
+                Ok(ChangeRequest {
                     id: r.get(0)?,
-                    job_id: r.get(1)?,
-                    status: r.get(2)?,
-                    note: r.get(3)?,
-                    requested_by: r.get(4)?,
-                    created_at: r.get(5)?,
+                    kind: r.get(1)?,
+                    job_id: r.get(2)?,
+                    status: r.get(3)?,
+                    start: date(4)?,
+                    end: date(5)?,
+                    owner: r.get(6)?,
+                    depends_on: r.get(7)?,
+                    task: r.get(8)?,
+                    workstream: r.get(9)?,
+                    plan_section: r.get(10)?,
+                    note: r.get(11)?,
+                    requested_by: r.get(12)?,
+                    created_at: r.get(13)?,
+                    applied_at: r.get(14)?,
+                    result: r.get(15)?,
                 })
             })
             .map_err(err)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(err)
+    }
+
+    pub fn pending_updates(&self) -> DbResult<Vec<ChangeRequest>> {
+        self.read_updates("applied_at IS NULL", &[])
+    }
+
+    pub fn updates_since(&self, since: &str) -> DbResult<Vec<ChangeRequest>> {
+        self.read_updates("created_at >= ?1", &[&since])
     }
 
     pub fn mark_applied(&self, ids: &[i64], result: Option<&str>, applied_at: &str) -> DbResult<usize> {
@@ -194,4 +233,43 @@ impl Db {
         }
         Ok(n)
     }
+}
+
+/// Older hubs stored only status and note, with job_id required. Rebuild that table in
+/// the new shape, keeping its rows.
+fn migrate_updates(conn: &Connection) -> DbResult<()> {
+    let has_kind: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('updates') WHERE name = 'kind'")
+        .and_then(|mut s| s.exists([]))
+        .map_err(err)?;
+    if has_kind {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "BEGIN;
+         ALTER TABLE updates RENAME TO updates_old;
+         CREATE TABLE updates (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             kind TEXT NOT NULL DEFAULT 'change',
+             job_id INTEGER,
+             status TEXT,
+             start TEXT,
+             end TEXT,
+             owner TEXT,
+             depends_on TEXT,
+             task TEXT,
+             workstream TEXT,
+             plan_section TEXT,
+             note TEXT,
+             requested_by TEXT NOT NULL,
+             created_at TEXT NOT NULL,
+             applied_at TEXT,
+             result TEXT
+         );
+         INSERT INTO updates (id, kind, job_id, status, note, requested_by, created_at, applied_at, result)
+             SELECT id, 'change', job_id, status, note, requested_by, created_at, applied_at, result FROM updates_old;
+         DROP TABLE updates_old;
+         COMMIT;",
+    )
+    .map_err(err)
 }

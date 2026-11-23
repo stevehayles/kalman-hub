@@ -114,6 +114,8 @@ async fn main() {
         .route("/api/briefing", get(rest::briefing))
         .route("/api/jobs", get(rest::jobs))
         .route("/api/updates", get(rest::pending).post(rest::queue))
+        .route("/api/changes", post(rest::change))
+        .route("/api/new-jobs", post(rest::new_job))
         .route_layer(middleware::from_fn_with_state(private_state.clone(), auth::require_token))
         .route("/healthz", get(|| async { "ok" }))
         .layer(RequestBodyLimitLayer::new(2 * 1024 * 1024))

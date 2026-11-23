@@ -17,10 +17,12 @@ MCP tools (`POST /mcp`, stateless Streamable HTTP, JSON responses):
 
 | Tool | Who | What it does |
 | --- | --- | --- |
-| `get_briefing` | both | Overdue, blocked, start now, starting soon, finishing this week, next gate, Claude's notes, a one-line summary |
-| `list_jobs` | both | Jobs with their current flag; filter by workstream, owner, status or flag |
-| `queue_status_update` | both | Queue a status change and/or note for a job |
-| `list_pending_updates` | both | Queued changes not yet applied |
+| `get_briefing` | both | Overdue, blocked, start now, starting soon, finishing this week, next gate, Claude's notes, pending changes, the last 7 days of activity, a one-line summary |
+| `list_jobs` | both | Jobs with their current flag, plus the known workstreams and owners; filter by workstream, owner, status or flag |
+| `queue_job_change` | both | Queue a change to a job: status, start, end, owner, dependencies and/or a progress note |
+| `queue_new_job` | both | Queue a new job; the workstream must exist, and near-duplicates are refused unless `allow_similar` |
+| `queue_status_update` | both | Shortcut for a status change and/or note |
+| `list_pending_updates` | both | Queued changes and new jobs not yet applied |
 | `save_tracker_snapshot` | Claude | Replace the hub's copy with every job from the tracker, plus optional notes |
 | `mark_updates_applied` | Claude | Mark queued changes as applied after writing them to the tracker |
 
@@ -34,6 +36,8 @@ REST endpoints on the private listener, for Pepper if it can't use MCP:
 | `GET /api/jobs` | `?workstream=&owner=&status=&flag=` |
 | `GET /api/updates` | pending updates |
 | `POST /api/updates` | `{"job_id": 70, "status": "Done", "note": "Landing page live"}` |
+| `POST /api/changes` | `{"job_id": 70, "end": "2026-12-22", "note": "Waiting on photos"}` |
+| `POST /api/new-jobs` | `{"task": "Book Southampton stand", "workstream": "Launch", "start": "2027-01-04", "end": "2027-01-29"}` |
 | `GET /healthz` | no token needed |
 
 All other requests need `Authorization: Bearer <token>`.

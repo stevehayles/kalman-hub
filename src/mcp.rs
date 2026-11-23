@@ -118,7 +118,7 @@ fn tool_list(role: Role) -> Vec<Value> {
         tool(
             "queue_status_update",
             "Queue a status update",
-            "Ask for a job's status to change, or add a note to it. The change is applied to the Claude tracker on the next sync, not straight away.",
+            "Shortcut for a status change and/or note on one job. queue_job_change can also change dates, owner and dependencies. Applied on the next daily sync.",
             json!({ "type": "object", "required": ["job_id"], "properties": {
                 "job_id": { "type": "integer" },
                 "status": { "type": "string", "enum": crate::model::STATUSES },
@@ -127,9 +127,41 @@ fn tool_list(role: Role) -> Vec<Value> {
             false,
         ),
         tool(
+            "queue_job_change",
+            "Queue a change to a job",
+            "Change an existing job: status, start or end date, owner, dependencies, and/or a progress note. Only the fields given change. Use list_jobs first to find the job ID. Applied to the Claude tracker on the next daily sync.",
+            json!({ "type": "object", "required": ["job_id"], "properties": {
+                "job_id": { "type": "integer" },
+                "status": { "type": "string", "enum": crate::model::STATUSES },
+                "start": { "type": "string", "format": "date", "description": "New start date, YYYY-MM-DD" },
+                "end": { "type": "string", "format": "date", "description": "New end date, YYYY-MM-DD" },
+                "owner": { "type": "string" },
+                "depends_on": { "type": "string", "description": "Job IDs, e.g. \"24, 31\"" },
+                "note": { "type": "string", "maxLength": 2000, "description": "Progress note in Steve's words" }
+            } }),
+            false,
+        ),
+        tool(
+            "queue_new_job",
+            "Queue a new job",
+            "Add a job to the tracker. The workstream must be one that already exists (list_jobs returns them). The hub refuses a job that looks like an existing one unless allow_similar is true. Applied on the next daily sync, which gives it an ID.",
+            json!({ "type": "object", "required": ["task", "workstream", "start", "end"], "properties": {
+                "task": { "type": "string", "maxLength": 300 },
+                "workstream": { "type": "string" },
+                "start": { "type": "string", "format": "date" },
+                "end": { "type": "string", "format": "date" },
+                "owner": { "type": "string" },
+                "depends_on": { "type": "string", "description": "Job IDs this depends on" },
+                "plan_section": { "type": "string", "description": "Plan section, e.g. §6" },
+                "note": { "type": "string", "maxLength": 2000 },
+                "allow_similar": { "type": "boolean", "description": "Add even though a similar job exists" }
+            } }),
+            false,
+        ),
+        tool(
             "list_pending_updates",
             "List queued updates",
-            "Status updates queued and not yet applied to the Claude tracker.",
+            "Changes and new jobs queued and not yet applied to the Claude tracker.",
             json!({ "type": "object", "properties": {} }),
             true,
         ),
@@ -149,7 +181,7 @@ fn tool_list(role: Role) -> Vec<Value> {
         tools.push(tool(
             "mark_updates_applied",
             "Mark updates as applied",
-            "After writing queued updates into the Claude tracker, mark them applied so they are not applied twice. Use result to say what happened, especially if an update was skipped.",
+            "After writing queued changes into the Claude tracker, mark them applied so they are not applied twice. Use result to say what happened: the ID given to a new job, or why a change was skipped.",
             json!({ "type": "object", "required": ["ids"], "properties": {
                 "ids": { "type": "array", "items": { "type": "integer" } },
                 "result": { "type": "string" }
@@ -167,6 +199,8 @@ fn call_tool(state: &AppState, role: Role, params: &Value) -> Value {
         "get_briefing" => service::get_briefing(state, args),
         "list_jobs" => service::list_jobs(state, args),
         "queue_status_update" => service::queue_update(state, role, args),
+        "queue_job_change" => service::queue_job_change(state, role, args),
+        "queue_new_job" => service::queue_new_job(state, role, args),
         "list_pending_updates" => service::list_pending(state),
         "save_tracker_snapshot" => service::save_snapshot(state, role, args),
         "mark_updates_applied" => service::mark_applied(state, role, args),
