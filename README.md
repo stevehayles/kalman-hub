@@ -7,8 +7,8 @@ A small shared store that lets Claude and Pepper work from the same Kalman launc
 - The **Claude tracker stays the master copy**. Pepper's changes reach it on the next sync.
 
 ```
-claude.ai ──HTTPS──▶ Cloudflare Tunnel ──▶ hub :8081  (public: MCP only, Claude token only)
-Pepper   ──Docker network──▶ hub :8080  (private: MCP + REST, both tokens)
+claude.ai ──HTTPS──▶ Tailscale Funnel ──▶ hub :8081  (public: MCP only, Claude token only)
+Pepper   ──Docker network or tailnet──▶ hub :8080  (private: MCP + REST, both tokens)
 ```
 
 ## What it offers
@@ -40,7 +40,7 @@ All other requests need `Authorization: Bearer <token>`.
 
 ## Setup
 
-### 1. Tokens and Cloudflare Tunnel
+### 1. Tokens and Tailscale key
 
 Generate two different tokens (run twice):
 
@@ -50,11 +50,15 @@ openssl rand -hex 32
 
 or in PowerShell 7: `[System.Security.Cryptography.RandomNumberGenerator]::GetHexString(64).ToLower()`
 
-In the Cloudflare dashboard (the domain must use Cloudflare DNS):
+In the Tailscale admin console:
 
-1. **Zero Trust → Networks → Tunnels → Create a tunnel**, type **Cloudflared**, name it `kalman-hub`.
-2. On the install page choose **Docker** and copy the token from the command shown (the long string after `--token`). This is `TUNNEL_TOKEN`. Skip running the command; the stack runs cloudflared for you.
-3. **Public hostname**: subdomain `hub`, domain e.g. `racevu.com`, path empty, service type **HTTP**, URL `hub:8081`. Save.
+1. **DNS**: turn on MagicDNS and HTTPS certificates.
+2. **Access controls**: allow Funnel for the node. With a tag, for example:
+   ```json
+   "tagOwners": { "tag:kalman-hub": ["autogroup:admin"] },
+   "nodeAttrs": [ { "target": ["tag:kalman-hub"], "attr": ["funnel"] } ]
+   ```
+3. **Keys**: create an auth key with that tag. This is `TS_AUTHKEY`.
 
 ### 2. Start it
 
@@ -63,31 +67,33 @@ In the Cloudflare dashboard (the domain must use Cloudflare DNS):
 1. Stacks → **Add stack** → name `kalman-hub` → **Repository**.
 2. Repository URL `https://github.com/stevehayles/kalman-hub`, reference `refs/heads/main`, compose path `docker-compose.yml`.
 3. Turn on **Authentication** and enter your GitHub username and a fine-grained token with read-only Contents access to this repo.
-4. Under **Environment variables**, add `HUB_CLAUDE_TOKEN`, `HUB_PEPPER_TOKEN` and `TUNNEL_TOKEN` (and optionally `HUB_TIMEZONE`, `HUB_SOON_DAYS`, `HUB_STALE_HOURS`).
+4. Under **Environment variables**, add `HUB_CLAUDE_TOKEN`, `HUB_PEPPER_TOKEN` and `TS_AUTHKEY` (and optionally `HUB_TIMEZONE`, `HUB_SOON_DAYS`, `HUB_STALE_HOURS`).
 5. **Deploy the stack.** Portainer clones the repo, builds the hub image and starts both containers. The first build takes a few minutes.
 
-To update later, push to `main` and use **Pull and redeploy** on the stack.
+To update later, push to `main` and use **Pull and redeploy** on the stack (tick re-pull/rebuild).
 
 **Docker CLI:** copy `.env.example` to `.env`, fill it in, then `docker compose up -d --build`.
 
-The public address is the hostname you set, e.g. `https://hub.racevu.com`. The tunnel shows **Healthy** in the dashboard once cloudflared connects.
+The public address is `https://kalman-hub.<your-tailnet>.ts.net`. Public DNS can take about 10 minutes the first time.
 
 ### 3. Check it
 
 ```sh
-# Should print {"jsonrpc":"2.0","id":1,"result":{}}
-curl -s -X POST https://hub.racevu.com/mcp -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"ping"}'
+# Should return 401: reachable, and refusing requests without the token
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://kalman-hub.<tailnet>.ts.net/mcp \
+  -H 'Content-Type: application/json' -d '{}'
 
-# Each public request appears in the hub log
-docker logs --since 5m kalman-hub-hub-1 2>&1 | grep "public request"
+# Should list six tools
+curl -s -X POST https://kalman-hub.<tailnet>.ts.net/mcp \
+  -H "Authorization: Bearer $HUB_CLAUDE_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
 ### 4. Add it to Claude
 
 claude.ai → **Customize → Connectors → + Add → Add custom connector**:
 
-- **URL**: `https://hub.racevu.com/mcp`
+- **URL**: `https://kalman-hub.<tailnet>.ts.net/mcp`
 - **Authentication**: no sign-in
 - **Request headers**: `Authorization` = `Bearer <HUB_CLAUDE_TOKEN>`
 
@@ -132,9 +138,9 @@ Set this up as a scheduled task in Claude, running before Pepper's briefing (for
 
 ## Security notes
 
-- Only the public listener (port 8081) is published through the tunnel, and it accepts only the Claude token. The REST API and the Pepper token never leave your server.
+- Only the public listener (port 8081) is published, and it accepts only the Claude token. The REST API and the Pepper token never leave your server or tailnet.
 - On the public listener, the MCP handshake and tool list answer without a token, because Claude's connector probes the server before it sends your header. Every tool call needs the Claude token, so no tracker data is readable or writable without it. Each public request is logged as `public request` with its path, status and whether a token was sent.
-- The tunnel makes the address public, so keep the tokens long and secret. Rotate a token by changing the stack's environment variable and redeploying; update the connector header to match.
+- Funnel makes the address public, so keep the tokens long and secret. Rotate a token by changing the stack's environment variable and redeploying; update the connector header to match.
 - The hub stores your tracker, nothing else. Back up the `hub-data` volume if you want history; the tracker itself can always rebuild it.
 
 ## Development
