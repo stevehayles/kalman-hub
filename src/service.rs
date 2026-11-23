@@ -90,7 +90,16 @@ pub fn get_briefing(state: &AppState, args: Value) -> OpResult {
     let mut recent = state.db.updates_since(&since)?;
     recent.reverse();
     recent.truncate(15);
-    let b = build_briefing(state.db.jobs()?, today, &state.cfg.tz_name, window, taken_at, stale, notes, pending, recent);
+    let jobs = state.db.jobs()?;
+    let mut underway: Vec<_> = jobs
+        .iter()
+        .cloned()
+        .map(|j| view(j, today, window))
+        .filter(|v| v.flag == "Underway")
+        .collect();
+    underway.sort_by_key(|v| v.job.end);
+    let mut b = build_briefing(jobs, today, &state.cfg.tz_name, window, taken_at, stale, notes, pending, recent);
+    b.telegram_text = crate::model::telegram_text(&b, &underway, &state.cfg.tracker_url);
     serde_json::to_value(b).map_err(|e| e.to_string())
 }
 

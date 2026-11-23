@@ -22,6 +22,7 @@ pub struct Config {
     pub tz_name: String,
     pub stale_hours: i64,
     pub soon_days: i64,
+    pub tracker_url: String,
 }
 
 impl Config {
@@ -96,6 +97,7 @@ async fn main() {
         tz_name,
         stale_hours: env_or("HUB_STALE_HOURS", "36").parse().unwrap_or(36),
         soon_days: env_or("HUB_SOON_DAYS", "21").parse().unwrap_or(21),
+        tracker_url: env_or("HUB_TRACKER_URL", "https://claude.ai/artifact/XjHPKY8Lb1pEAoUDYEvGHB"),
     };
 
     let db_path = PathBuf::from(env_or("HUB_DB", "/data/hub.db"));

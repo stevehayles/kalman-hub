@@ -17,7 +17,7 @@ MCP tools (`POST /mcp`, stateless Streamable HTTP, JSON responses):
 
 | Tool | Who | What it does |
 | --- | --- | --- |
-| `get_briefing` | both | Overdue, blocked, start now, starting soon, finishing this week, next gate, Claude's notes, pending changes, the last 7 days of activity, a one-line summary |
+| `get_briefing` | both | Overdue, blocked, start now, starting soon, finishing this week, next gate, Claude's notes, pending changes, the last 7 days of activity, a one-line summary, and `telegram_text`: the whole briefing as a ready-to-send message ending with the tracker link (`HUB_TRACKER_URL`) |
 | `list_jobs` | both | Jobs with their current flag, plus the known workstreams and owners; filter by workstream, owner, status or flag |
 | `queue_job_change` | both | Queue a change to a job: status, start, end, owner, dependencies and/or a progress note |
 | `queue_new_job` | both | Queue a new job; the workstream must exist, and near-duplicates are refused unless `allow_similar` |
