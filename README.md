@@ -139,6 +139,7 @@ Set this up as a scheduled task in Claude, running before Pepper's briefing (for
 ## Security notes
 
 - Only the public listener (port 8081) is published, and it accepts only the Claude token. The REST API and the Pepper token never leave your server or tailnet.
+- On the public listener, the MCP handshake and tool list answer without a token, because Claude's connector probes the server before it sends your header. Every tool call needs the Claude token, so no tracker data is readable or writable without it. Each public request is logged as `public request` with its path, status and whether a token was sent.
 - Funnel makes the address public, so keep the tokens long and secret. Rotate a token by changing the stack's environment variable and redeploying; update the connector header to match.
 - The hub stores your tracker, nothing else. Back up the `hub-data` volume if you want history; the tracker itself can always rebuild it.
 

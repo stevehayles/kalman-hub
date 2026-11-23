@@ -1,7 +1,7 @@
 //! Minimal stateless MCP server over Streamable HTTP: each POST carries JSON-RPC
 //! and gets a JSON reply. No server-initiated messages, so GET returns 405.
 
-use crate::auth::Role;
+use crate::auth::{Caller, Role};
 use crate::{service, AppState};
 use axum::{
     extract::State,
@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 const SUPPORTED_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-pub async fn post(State(state): State<AppState>, Extension(role): Extension<Role>, Json(body): Json<Value>) -> Response {
+pub async fn post(State(state): State<AppState>, Extension(Caller(role)): Extension<Caller>, Json(body): Json<Value>) -> Response {
     let replies: Vec<Value> = match body {
         Value::Array(msgs) => msgs.into_iter().filter_map(|m| handle(&state, role, m)).collect(),
         msg => handle(&state, role, msg).into_iter().collect(),
@@ -29,7 +29,7 @@ pub async fn not_allowed() -> Response {
     (StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "POST")], "this server only answers POST").into_response()
 }
 
-fn handle(state: &AppState, role: Role, msg: Value) -> Option<Value> {
+fn handle(state: &AppState, role: Option<Role>, msg: Value) -> Option<Value> {
     let id = msg.get("id").cloned();
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
@@ -37,13 +37,15 @@ fn handle(state: &AppState, role: Role, msg: Value) -> Option<Value> {
     // Notifications and client responses carry no id and get no reply.
     let id = id?;
 
-    let result = match method {
-        "initialize" => Ok(initialize(&params)),
-        "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tool_list(role) })),
-        "tools/call" => Ok(call_tool(state, role, &params)),
-        "resources/list" => Ok(json!({ "resources": [] })),
-        "prompts/list" => Ok(json!({ "prompts": [] })),
+    let result = match (method, role) {
+        ("initialize", _) => Ok(initialize(&params)),
+        ("ping", _) => Ok(json!({})),
+        // Without a token, show the tool list so the connector can be set up; calls still need the token.
+        ("tools/list", r) => Ok(json!({ "tools": tool_list(r.unwrap_or(Role::Claude)) })),
+        ("tools/call", Some(r)) => Ok(call_tool(state, r, &params)),
+        ("tools/call", None) => Err((-32001, "this call needs the Claude token in the Authorization header".to_string())),
+        ("resources/list", _) => Ok(json!({ "resources": [] })),
+        ("prompts/list", _) => Ok(json!({ "prompts": [] })),
         _ => Err((-32601, format!("method not found: {method}"))),
     };
 

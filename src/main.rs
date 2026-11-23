@@ -125,7 +125,8 @@ async fn main() {
     let public_app = Router::new()
         .route("/", post(mcp::post).get(mcp::not_allowed).delete(mcp::not_allowed))
         .route("/mcp", post(mcp::post).get(mcp::not_allowed).delete(mcp::not_allowed))
-        .route_layer(middleware::from_fn_with_state(public_state.clone(), auth::require_token))
+        .route_layer(middleware::from_fn_with_state(public_state.clone(), auth::identify))
+        .layer(middleware::from_fn(auth::log_public))
         .layer(RequestBodyLimitLayer::new(2 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
         .with_state(public_state);
