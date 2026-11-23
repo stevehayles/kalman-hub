@@ -126,6 +126,8 @@ async fn main() {
         .route("/", post(mcp::post).get(mcp::not_allowed).delete(mcp::not_allowed))
         .route("/mcp", post(mcp::post).get(mcp::not_allowed).delete(mcp::not_allowed))
         .route_layer(middleware::from_fn_with_state(public_state.clone(), auth::identify))
+        .route("/robots.txt", get(|| async { "User-agent: *\nDisallow:\n" }))
+        .fallback(|| async { (axum::http::StatusCode::NOT_FOUND, "not found") })
         .layer(middleware::from_fn(auth::log_public))
         .layer(RequestBodyLimitLayer::new(2 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
